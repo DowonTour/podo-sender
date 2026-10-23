@@ -1,1 +1,75 @@
-.github/workflows/build-apk.yml
+name: Build APK
+
+# GitHub 저장소에 올리면 자동으로 실행됩니다 (약 5~10분).
+# 결과: 저장소 오른쪽 "Releases" 에 build-번호 로 APK(app-debug.apk)가 올라옵니다. 폰에서 바로 받아 설치하세요.
+# 수동 실행: Actions 탭 > Build APK > Run workflow
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # Release 에 APK 를 첨부하기 위해 필요
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 파일을 저장소 맨 위에 올렸든, PodoSender 같은 폴더째 올렸든 settings.gradle.kts 가 있는 곳을 찾아 사용
+      - name: Locate Android project
+        id: loc
+        run: |
+          f=$(find . -name settings.gradle.kts -not -path "./.git/*" | head -n 1)
+          if [ -z "$f" ]; then
+            echo "::error::settings.gradle.kts 를 찾지 못했습니다. PodoSender 폴더의 파일들이 저장소에 올라갔는지 확인하세요."
+            exit 1
+          fi
+          dir=$(dirname "$f")
+          echo "Android project dir: $dir"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        working-directory: ${{ steps.loc.outputs.dir }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Build debug APK
+        working-directory: ${{ steps.loc.outputs.dir }}
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PodoSender-debug-apk
+          path: ${{ steps.loc.outputs.dir }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Publish APK as a Release (phone-friendly download)
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: PodoSender build ${{ github.run_number }}
+          prerelease: true
+          body: |
+            Debug APK (디버그 키로 서명). 폰에서 app-debug.apk 를 받아 설치하세요.
+          files: ${{ steps.loc.outputs.dir }}/app/build/outputs/apk/debug/*.apk
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-reports
+          path: |
+            ${{ steps.loc.outputs.dir }}/app/build/reports/
+          if-no-files-found: ignore
